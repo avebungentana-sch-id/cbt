@@ -6,7 +6,6 @@
     <title>Sistem Ujian CBT Terpadu</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <!-- Library SheetJS untuk Ekspor/Impor Excel & CSV -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
         /* Custom Styles */
@@ -31,7 +30,6 @@
             .print-signature { margin-top: 50px; display: flex; justify-content: space-between; page-break-inside: avoid; font-size: 11pt; }
             .text-center { text-align: center; }
             .font-bold { font-weight: bold; }
-            /* Participant Card Styles */
             .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
             .peserta-card { border: 2px solid #000; padding: 15px; border-radius: 8px; break-inside: avoid; position: relative; font-family: 'Segoe UI', sans-serif; }
             .card-header-box { text-align: center; border-bottom: 2px solid #000; margin-bottom: 10px; padding-bottom: 5px; }
@@ -52,8 +50,15 @@
 </head>
 <body class="text-gray-800">
 
+    <!-- LOADING SCREEN FOR FIREBASE -->
+    <div id="loadingOverlay" class="fixed inset-0 bg-blue-900 flex flex-col items-center justify-center z-[9999] text-white">
+        <i class="fas fa-circle-notch fa-spin text-6xl mb-4 text-blue-400"></i>
+        <h2 class="text-2xl font-bold">Menghubungkan ke Server...</h2>
+        <p class="text-blue-300 mt-2 text-sm">Menyiapkan Database Firebase CBT</p>
+    </div>
+
     <!-- LOGIN SCREEN -->
-    <div id="loginScreen" class="min-h-screen flex items-center justify-center bg-blue-900 px-4">
+    <div id="loginScreen" class="min-h-screen flex items-center justify-center bg-blue-900 px-4 hidden">
         <div class="bg-white p-8 rounded-lg shadow-2xl w-full max-w-md">
             <div class="text-center mb-8">
                 <i class="fas fa-graduation-cap text-5xl text-blue-600 mb-4"></i>
@@ -112,104 +117,112 @@
     <div id="printArea" class="print-only print-container"></div>
 
     <script>
-        /* ==================== DATABASE SIMULATION (LocalStorage) ==================== */
-        const DB_KEY = 'cbt_database_v3'; 
-        
+        /* ==================== STATE & DB MANAGEMENT ==================== */
         let db = {
             users: [
-                { id: 'u1', username: 'admin', password: '123', role: 'admin', name: 'Administrator' },
-                { id: 'u2', username: 'guru1', password: '123', role: 'guru', name: 'Budi Santoso', subjectIds: ['m1'] },
-                { id: 'u3', username: 'siswa1', password: '123', role: 'siswa', name: 'Andi M', kelas: 'XII-IPA-1', noUjian: 'U-001' }
+                { id: 'u1', username: 'admin', password: '123', role: 'admin', name: 'Administrator' }
             ],
-            subjects: [
-                { id: 'm1', name: 'Matematika', allowedClasses: [], randomizeQuestions: false, randomizeOptions: false },
-                { id: 'm2', name: 'Bahasa Indonesia', allowedClasses: [], randomizeQuestions: false, randomizeOptions: false }
-            ],
-            classes: [
-                { id: 'c1', name: 'XII-IPA-1' },
-                { id: 'c2', name: 'XII-IPS-1' }
-            ],
-            schoolInfo: {
-                name: 'SMA Negeri 1 Contoh',
-                address: 'Jl. Pendidikan No. 1, Kota Belajar',
-                academicYear: '2023/2024',
-                semester: 'Genap',
-                examType: 'Ujian Akhir Semester'
-            },
+            subjects: [],
+            classes: [],
+            schoolInfo: { name: '', address: '', academicYear: '', semester: '', examType: '' },
             questions: [],
-            examSettings: {
-                isRunning: false,
-                token: 'XYZ123',
-                activeSubjectIds: ['m1'],
-                kkm: 70,
-                duration: 120 // in minutes
-            },
-            examResults: [], // { studentId, subjectId, score, status, answers: {}, doubtful: {}, endTime: timestamp }
-            beritaAcara: {}, // { subjectId: { tanggal, terdaftar, hadir, absen, noAbsen, catatan, pengawasName } }
-            schedules: [] // { id, date, time, subjectId }
+            examSettings: { isRunning: false, token: 'XYZ123', activeSubjectIds: [], kkm: 70, duration: 120 },
+            examResults: [], 
+            beritaAcara: {}, 
+            schedules: [] 
         };
 
-        function initDB() {
-            let stored = localStorage.getItem(DB_KEY);
-            if (!stored) {
-                // Auto Migrate from old version
-                let old = localStorage.getItem('cbt_database_v2');
-                if(old) {
-                    db = JSON.parse(old);
-                    db.users.forEach(u => { if(u.role==='guru' && !u.subjectIds) u.subjectIds = u.subjectId ? [u.subjectId] : []; });
-                    if(!db.examSettings.duration) db.examSettings.duration = 120;
-                    if(!db.beritaAcara) db.beritaAcara = {};
-                    if(!db.schedules) db.schedules = [];
-                    if(!db.classes) db.classes = [];
-                    if(!db.schoolInfo) db.schoolInfo = { name: '', address: '', academicYear: '', semester: '', examType: '' };
-                    
-                    // Migrate activeSubjectId to array
-                    if(db.examSettings.activeSubjectId !== undefined) {
-                        db.examSettings.activeSubjectIds = db.examSettings.activeSubjectId ? [db.examSettings.activeSubjectId] : [];
-                        delete db.examSettings.activeSubjectId;
-                    }
-                    if(!db.examSettings.activeSubjectIds) db.examSettings.activeSubjectIds = [];
+        // Event listener saat Firebase siap digunakan
+        window.addEventListener('firebaseReady', () => {
+            initDB();
+        });
 
+        async function initDB() {
+            try {
+                const keys = Object.keys(db);
+                let hasData = false;
+                for (const key of keys) {
+                    const snap = await window.fsGetDoc(window.fsDoc(window.dbFirestore, 'cbt_database', key));
+                    if (snap.exists()) {
+                        db[key] = snap.data().data;
+                        hasData = true;
+                    }
+                }
+
+                // Fallbacks jika data kosong / format lama
+                if(!db.schedules) db.schedules = [];
+                if(!db.classes) db.classes = [];
+                if(!db.schoolInfo) db.schoolInfo = { name: '', address: '', academicYear: '', semester: '', examType: '' };
+                if(!db.examSettings.activeSubjectIds) db.examSettings.activeSubjectIds = [];
+                if(db.subjects) {
                     db.subjects.forEach(s => { 
                         if(!s.allowedClasses) s.allowedClasses = []; 
                         if(s.randomizeQuestions === undefined) s.randomizeQuestions = false;
                         if(s.randomizeOptions === undefined) s.randomizeOptions = false;
                     });
-                    db.examResults.forEach(r => { if(!r.doubtful) r.doubtful = {}; });
-                    saveDB();
-                } else { saveDB(); }
-            } else {
-                db = JSON.parse(stored);
-                if(!db.schedules) db.schedules = [];
-                if(!db.classes) db.classes = [];
-                if(!db.schoolInfo) db.schoolInfo = { name: '', address: '', academicYear: '', semester: '', examType: '' };
-                
-                // Migrate activeSubjectId to array if missed
-                if(db.examSettings.activeSubjectId !== undefined) {
-                    db.examSettings.activeSubjectIds = db.examSettings.activeSubjectId ? [db.examSettings.activeSubjectId] : [];
-                    delete db.examSettings.activeSubjectId;
                 }
-                if(!db.examSettings.activeSubjectIds) db.examSettings.activeSubjectIds = [];
 
-                db.subjects.forEach(s => { 
-                    if(!s.allowedClasses) s.allowedClasses = [];
-                    if(s.randomizeQuestions === undefined) s.randomizeQuestions = false;
-                    if(s.randomizeOptions === undefined) s.randomizeOptions = false;
-                });
+                if (!hasData) {
+                    saveDB(); // Simpan kerangka awal ke Firebase
+                }
+
+                // --- Realtime Listeners for Proktor & Status Synchronization ---
+                if(!window.unsubResults) {
+                    window.unsubResults = window.fsOnSnapshot(window.fsDoc(window.dbFirestore, 'cbt_database', 'examResults'), (docSnap) => {
+                        if(docSnap.exists()) db.examResults = docSnap.data().data;
+                    });
+                }
+                if(!window.unsubSettings) {
+                    window.unsubSettings = window.fsOnSnapshot(window.fsDoc(window.dbFirestore, 'cbt_database', 'examSettings'), (docSnap) => {
+                        if(docSnap.exists()) db.examSettings = docSnap.data().data;
+                    });
+                }
+
+                // Sembunyikan loading dan tampilkan login
+                document.getElementById('loadingOverlay').classList.add('hidden');
+                document.getElementById('loginScreen').classList.remove('hidden');
+
+            } catch (e) {
+                console.error("Firebase init error:", e);
+                alert("Gagal terhubung ke Firebase. Periksa koneksi internet atau konfigurasi Firebase Anda.");
+                document.getElementById('loadingOverlay').classList.add('hidden');
             }
         }
-        function saveDB() { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+
+        let saveTimeout = null;
+        function saveDB(keysToSave = null) {
+            if (!window.dbFirestore) return;
+            
+            let keys = keysToSave ? (Array.isArray(keysToSave) ? keysToSave : [keysToSave]) : Object.keys(db);
+
+            if (!window.pendingSaveKeys) window.pendingSaveKeys = new Set();
+            keys.forEach(k => window.pendingSaveKeys.add(k));
+
+            if (saveTimeout) clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(async () => {
+                try {
+                    const keysToProcess = Array.from(window.pendingSaveKeys);
+                    window.pendingSaveKeys.clear();
+                    for(const key of keysToProcess) {
+                        await window.fsSetDoc(window.fsDoc(window.dbFirestore, 'cbt_database', key), { data: db[key] });
+                    }
+                } catch (e) {
+                    console.error("Firebase save error:", e);
+                }
+            }, 1000); // Debounce 1 detik untuk meminimalisir write operations
+        }
+        
         function generateId() { return Math.random().toString(36).substr(2, 9); }
 
         /* ==================== STATE MANAGEMENT ==================== */
         let currentUser = null;
-        let currentStudentSubjectId = null; // Mapel aktif yang sedang dikerjakan Siswa
+        let currentStudentSubjectId = null; 
         let currentAnswers = {}; 
         let currentDoubtful = {};
         let cheatWarnings = 0;
         let examTimerInterval = null;
-        let editUserId = null; // State untuk fitur Edit User
-        let isFinishingExam = false; // Flag untuk mengamankan proses keluar ujian dari sistem anti-cheat
+        let editUserId = null; 
+        let isFinishingExam = false; 
 
         /* ==================== UTILITIES ==================== */
         function compressImage(file, callback) {
@@ -615,20 +628,19 @@
             if(!u || !p || !n) return alert('Isi semua field!');
             
             if (editUserId) {
-                // Update mode
                 const user = db.users.find(x => x.id === editUserId);
                 if(user) {
                     user.username = u; user.password = p; user.name = n;
                     if(role === 'siswa') { user.kelas = k; user.noUjian = no; }
                     if(role === 'guru') { user.subjectIds = m; }
                 }
-                editUserId = null; // Reset
+                editUserId = null; 
                 alert('Data berhasil diperbarui!');
             } else {
-                // Insert mode
                 db.users.push({ id: generateId(), username: u, password: p, name: n, role: role, kelas: k, noUjian: no, subjectIds: m });
             }
-            saveDB(); switchAdminTab(role);
+            saveDB('users'); 
+            switchAdminTab(role);
         }
 
         /* --- FITUR IMPOR DATA EXCEL / CSV --- */
@@ -672,12 +684,12 @@
                         }
                     }
                 });
-                saveDB();
+                saveDB('users');
                 switchAdminTab(role);
                 alert(`Berhasil mengimpor ${imported} data ${role}.\n\nCatatan: Pastikan baris teratas Excel Anda memuat judul kolom (Username, Password, Nama Lengkap, dsb) secara spesifik.`);
             };
             reader.readAsArrayBuffer(file);
-            event.target.value = ''; // Reset input agar bisa re-import file yang sama
+            event.target.value = ''; 
         }
 
         /* --- CRUD & BULK ACTIONS HELPERS --- */
@@ -705,13 +717,10 @@
                 document.getElementById('btn_cancel_guru').classList.remove('hidden');
                 document.getElementById('form_title_guru').innerText = 'Edit Data Guru';
             }
-            window.scrollTo(0, 0); // Gulir ke atas menuju form
+            window.scrollTo(0, 0); 
         }
 
-        function cancelEdit(role) {
-            editUserId = null;
-            switchAdminTab(role); // Reset tampilan dan hapus form edit
-        }
+        function cancelEdit(role) { editUserId = null; switchAdminTab(role); }
 
         function toggleAll(source, role) {
             const checkboxes = document.querySelectorAll('.chk-' + role);
@@ -724,7 +733,7 @@
             if(confirm(`Anda yakin ingin menghapus ${checkboxes.length} data terpilih secara permanen?`)) {
                 const ids = Array.from(checkboxes).map(cb => cb.value);
                 db.users = db.users.filter(u => !ids.includes(u.id));
-                saveDB(); switchAdminTab(role);
+                saveDB('users'); switchAdminTab(role);
             }
         }
 
@@ -734,33 +743,32 @@
             const m = document.getElementById('j_mapel').value;
             if(!d || !t || !m) return alert('Lengkapi form jadwal ujian!');
             db.schedules.push({ id: generateId(), date: d, time: t, subjectId: m });
-            saveDB(); switchAdminTab('jadwal');
+            saveDB('schedules'); switchAdminTab('jadwal');
         }
 
         function deleteJadwal(id) {
-            if(confirm('Hapus jadwal ini?')) { db.schedules = db.schedules.filter(x => x.id !== id); saveDB(); switchAdminTab('jadwal'); }
+            if(confirm('Hapus jadwal ini?')) { db.schedules = db.schedules.filter(x => x.id !== id); saveDB('schedules'); switchAdminTab('jadwal'); }
         }
 
         function addKelas() {
             const n = document.getElementById('nk_name').value;
-            if(n) { db.classes.push({id: 'c'+Date.now(), name: n}); saveDB(); switchAdminTab('kelompok'); }
+            if(n) { db.classes.push({id: 'c'+Date.now(), name: n}); saveDB('classes'); switchAdminTab('kelompok'); }
         }
         
         function deleteKelas(id) {
-            if(confirm('Hapus kelompok kelas ini?')) { db.classes = db.classes.filter(x => x.id !== id); saveDB(); switchAdminTab('kelompok'); }
+            if(confirm('Hapus kelompok kelas ini?')) { db.classes = db.classes.filter(x => x.id !== id); saveDB('classes'); switchAdminTab('kelompok'); }
         }
-        /* ----------------------------------- */
-
-        function deleteUser(id, tab) { if(confirm('Hapus?')) { db.users = db.users.filter(x => x.id !== id); saveDB(); switchAdminTab(tab); } }
+        
+        function deleteUser(id, tab) { if(confirm('Hapus?')) { db.users = db.users.filter(x => x.id !== id); saveDB('users'); switchAdminTab(tab); } }
         
         function addSubject() { 
             const n=document.getElementById('nm_name').value; 
             const k=Array.from(document.getElementById('nm_kelas').selectedOptions).map(opt => opt.value);
-            if(n){ db.subjects.push({id:'m'+Date.now(), name:n, allowedClasses: k, randomizeQuestions: false, randomizeOptions: false}); saveDB(); switchAdminTab('mapel'); } 
+            if(n){ db.subjects.push({id:'m'+Date.now(), name:n, allowedClasses: k, randomizeQuestions: false, randomizeOptions: false}); saveDB('subjects'); switchAdminTab('mapel'); } 
         }
         
-        function deleteSubject(id) { if(confirm('Hapus Mapel?')) { db.subjects = db.subjects.filter(x => x.id !== id); saveDB(); switchAdminTab('mapel'); } }
-        function savePengaturan() { db.examSettings.kkm = parseInt(document.getElementById('set_kkm').value)||70; saveDB(); alert('Disimpan'); }
+        function deleteSubject(id) { if(confirm('Hapus Mapel?')) { db.subjects = db.subjects.filter(x => x.id !== id); saveDB('subjects'); switchAdminTab('mapel'); } }
+        function savePengaturan() { db.examSettings.kkm = parseInt(document.getElementById('set_kkm').value)||70; saveDB('examSettings'); alert('Disimpan'); }
         
         function savePengaturanSekolah() {
             db.schoolInfo.name = document.getElementById('set_school_name').value;
@@ -768,12 +776,12 @@
             db.schoolInfo.academicYear = document.getElementById('set_school_year').value;
             db.schoolInfo.semester = document.getElementById('set_school_semester').value;
             db.schoolInfo.examType = document.getElementById('set_school_exam').value;
-            saveDB(); alert('Profil Sekolah Berhasil Disimpan');
+            saveDB('schoolInfo'); alert('Profil Sekolah Berhasil Disimpan');
         }
 
         function generateToken() {
             const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'; let token=''; for(let i=0;i<6;i++) token+=chars.charAt(Math.floor(Math.random()*chars.length));
-            db.examSettings.token = token; saveDB(); switchAdminTab('proktor');
+            db.examSettings.token = token; saveDB('examSettings'); switchAdminTab('proktor');
         }
 
         function toggleExam(status) {
@@ -786,14 +794,13 @@
             } else {
                 if(!confirm('Anda yakin ingin MENGHENTIKAN ujian secara keseluruhan?\nSemua peserta yang masih mengerjakan akan otomatis diselesaikan sistem.')) return;
                 
-                // Mengotomatiskan proses hitung nilai dan selesaikan semua yg ongoing
                 db.examResults.forEach(res => {
                     if(res.status === 'ongoing' && db.examSettings.activeSubjectIds.includes(res.subjectId)) {
                         calculateAndSaveScore(res);
                     }
                 });
             }
-            db.examSettings.isRunning = status; saveDB(); switchAdminTab('proktor');
+            db.examSettings.isRunning = status; saveDB(['examSettings', 'examResults']); switchAdminTab('proktor');
         }
 
         function calculateAndSaveScore(res) {
@@ -815,13 +822,9 @@
             if(confirm(confirmMsg)) {
                 let res = db.examResults.find(r => r.studentId === sid && r.subjectId === subjectId);
                 if(res) {
-                    if(isCheating) {
-                        res.score = 0;
-                        res.status = 'cheated';
-                    } else {
-                        calculateAndSaveScore(res);
-                    }
-                    saveDB();
+                    if(isCheating) { res.score = 0; res.status = 'cheated'; } 
+                    else { calculateAndSaveScore(res); }
+                    saveDB('examResults');
                     switchAdminTab('proktor');
                 }
             }
@@ -830,14 +833,14 @@
         function resetLoginSiswa(sid, subjectId) {
             if(confirm('Reset status login siswa ini agar dapat masuk kembali? (Jawaban lama tidak akan terhapus)')) {
                 let res = db.examResults.find(r => r.studentId === sid && r.subjectId === subjectId);
-                if(res) { res.status = 'ongoing'; saveDB(); switchAdminTab('proktor'); }
+                if(res) { res.status = 'ongoing'; saveDB('examResults'); switchAdminTab('proktor'); }
             }
         }
 
         function deleteExamStatus(sid, subjectId) {
             if(confirm('PERINGATAN!\nAnda yakin ingin menghapus seluruh data/status ujian siswa ini pada mata pelajaran terpilih?\nSemua jawaban akan HILANG secara permanen dan status ujian akan diulang dari awal.')) {
                 db.examResults = db.examResults.filter(r => !(r.studentId === sid && r.subjectId === subjectId));
-                saveDB();
+                saveDB('examResults');
                 switchAdminTab('proktor');
             }
         }
@@ -850,7 +853,6 @@
             const jadwal = db.schedules.find(j => j.id === jId);
             const subject = db.subjects.find(s => s.id === jadwal.subjectId);
             
-            // Ambil peserta yang tercatat login berdasarkan subjectId
             const loggedInResults = db.examResults.filter(r => r.subjectId === subject?.id);
             const loggedInStudentIds = loggedInResults.map(r => r.studentId);
             const students = db.users.filter(u => u.role === 'siswa' && loggedInStudentIds.includes(u.id));
@@ -889,7 +891,7 @@
             const subjId = document.getElementById('lap_active_mapel')?.value;
             if(!subjId) return alert('Pilih Mata Pelajaran dari dropdown terlebih dahulu.');
             const subject = db.subjects.find(s => s.id === subjId);
-            const ba = db.beritaAcara[subjId] || {}; // Data dari input Guru
+            const ba = db.beritaAcara[subjId] || {}; 
             
             document.getElementById('printArea').innerHTML = `
                 <div class="print-header">
@@ -1070,7 +1072,7 @@
 
                     const saveQ = (imgData) => {
                         db.questions.push({ id: generateId(), subjectId: mapel, text, options, answer, image: imgData, points: pt });
-                        saveDB(); document.getElementById('addQuestionForm').reset(); renderGuruList();
+                        saveDB('questions'); document.getElementById('addQuestionForm').reset(); renderGuruList();
                     };
                     if(fileInput.files.length > 0) compressImage(fileInput.files[0], saveQ); else saveQ(null);
                 });
@@ -1094,7 +1096,7 @@
                         </div>
                     </div>
                 `;
-                loadBeritaAcara(); // Load existing if any
+                loadBeritaAcara(); 
             }
         }
 
@@ -1104,7 +1106,7 @@
             if(sub) {
                 sub.randomizeQuestions = document.getElementById('g_acak_soal').checked;
                 sub.randomizeOptions = document.getElementById('g_acak_opsi').checked;
-                saveDB();
+                saveDB('subjects');
             }
         }
 
@@ -1124,7 +1126,6 @@
             const subjId = document.getElementById('g_active_mapel').value;
             const sub = db.subjects.find(s => s.id === subjId);
             
-            // Set state checkbox sesuai data mapel
             if (sub) {
                 document.getElementById('g_acak_soal').checked = !!sub.randomizeQuestions;
                 document.getElementById('g_acak_opsi').checked = !!sub.randomizeOptions;
@@ -1147,7 +1148,7 @@
             document.getElementById('qListArea').innerHTML = `<div><h3 class="font-bold text-xl mb-4 mt-8">Daftar Soal Tersimpan (${qs.length})</h3>${qList || '<p class="text-gray-500 italic bg-white p-4 rounded shadow">Belum ada soal.</p>'}</div>`;
         }
 
-        function deleteQuestion(id) { if(confirm('Hapus soal ini?')) { db.questions = db.questions.filter(q => q.id !== id); saveDB(); renderGuruList(); } }
+        function deleteQuestion(id) { if(confirm('Hapus soal ini?')) { db.questions = db.questions.filter(q => q.id !== id); saveDB('questions'); renderGuruList(); } }
 
         function loadBeritaAcara() {
             const mapelId = document.getElementById('ba_mapel').value;
@@ -1171,7 +1172,7 @@
                 catatan: document.getElementById('ba_catatan').value,
                 pengawasName: currentUser.name
             };
-            saveDB(); alert('Berita Acara berhasil disimpan untuk Mapel ini.');
+            saveDB('beritaAcara'); alert('Berita Acara berhasil disimpan untuk Mapel ini.');
         }
 
         /* ==================== SISWA MODULE & ANTI-CHEAT (UNBK STYLE) ==================== */
@@ -1183,7 +1184,6 @@
                 container.innerHTML = `<div class="bg-white p-8 rounded shadow text-center max-w-lg mx-auto mt-10"><i class="fas fa-clock text-6xl text-gray-400 mb-4"></i><h2 class="text-2xl font-bold">Ujian Belum Dimulai</h2><p class="text-gray-600">Silakan tunggu arahan Proktor.</p></div>`; return;
             }
 
-            // Menyaring mata pelajaran aktif yang boleh diakses kelas siswa
             let activeSubjects = db.subjects.filter(s => db.examSettings.activeSubjectIds.includes(s.id));
             activeSubjects = activeSubjects.filter(s => !s.allowedClasses || s.allowedClasses.length === 0 || s.allowedClasses.includes(currentUser.kelas));
 
@@ -1203,7 +1203,6 @@
                 return `<option value="${s.id}" ${disabledAttr}>${s.name}${statusText}</option>`;
             }).join('');
 
-            // Cek jika sedang ada yang dikerjakan secara tertunda (ongoing)
             let ongoingSubject = activeSubjects.find(sub => {
                 let res = db.examResults.find(r => r.studentId === currentUser.id && r.subjectId === sub.id);
                 return res && res.status === 'ongoing';
@@ -1212,11 +1211,9 @@
             if(ongoingSubject && !currentStudentSubjectId) {
                 currentStudentSubjectId = ongoingSubject.id;
             } else if(activeSubjects.length === 1 && !currentStudentSubjectId) {
-                // Jika hanya ada 1 mapel, langsung auto pilih
                 currentStudentSubjectId = activeSubjects[0].id;
             }
 
-            // Render layar pemilihan mapel jika terdapat >1 mapel aktif dan belum ada yang dipilih
             if(!currentStudentSubjectId) {
                 let cardsHtml = activeSubjects.map(sub => {
                     let res = db.examResults.find(r => r.studentId === currentUser.id && r.subjectId === sub.id);
@@ -1242,7 +1239,7 @@
             const res = db.examResults.find(r => r.studentId === currentUser.id && r.subjectId === currentStudentSubjectId);
             
             if(res && (res.status === 'finished' || res.status === 'cheated')) {
-                currentStudentSubjectId = null; // Reset agar siswa dapat memilih mapel lain jika ada
+                currentStudentSubjectId = null; 
                 container.innerHTML = `
                     <div class="bg-white p-8 rounded shadow text-center max-w-lg mx-auto mt-10">
                         <i class="fas ${res.status === 'cheated' ? 'fa-ban text-red-500' : 'fa-check-circle text-green-500'} text-6xl mb-4"></i>
@@ -1273,7 +1270,6 @@
                 </div>
                 
                 <div id="activeExamArea" class="hidden flex flex-col lg:flex-row gap-4 h-full w-full max-w-7xl mx-auto">
-                    <!-- Soal Area -->
                     <div class="flex-grow bg-white p-4 sm:p-6 rounded shadow relative flex flex-col w-full order-1 lg:order-none">
                         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 border-b pb-3 gap-3">
                             <h3 class="font-bold text-base sm:text-lg text-blue-800 flex items-center">SOAL NO. <span id="qNumberDisplay" class="bg-blue-800 text-white px-2 sm:px-3 py-1 rounded ml-2 text-lg sm:text-xl shadow-inner">1</span></h3>
@@ -1285,7 +1281,6 @@
                         <div id="qContent" class="text-base sm:text-lg mb-6 flex-grow overflow-y-auto min-h-[150px] sm:min-h-[250px] leading-relaxed"></div>
                         <div id="qOptions" class="space-y-3 mb-6"></div>
                         
-                        <!-- UNBK Buttons Navigation -->
                         <div class="flex flex-wrap justify-between items-center border-t pt-4 mt-auto gap-3">
                             <button onclick="navigateQ(-1)" id="btnPrev" class="w-full sm:w-auto px-4 py-3 bg-gray-200 text-gray-800 font-bold rounded hover:bg-gray-300 disabled:opacity-50 border border-gray-400 active:scale-95 transition flex justify-center items-center gap-2"><i class="fas fa-chevron-left"></i> SEBELUMNYA</button>
 
@@ -1300,7 +1295,6 @@
                         </div>
                     </div>
                     
-                    <!-- Navigasi Grid Area -->
                     <div class="w-full lg:w-80 bg-white p-4 rounded shadow h-fit lg:sticky lg:top-4 flex flex-col order-2 lg:order-none mt-4 lg:mt-0">
                         <div class="text-center mb-4 border-b pb-2 hidden lg:block">
                             <p class="font-bold text-gray-800 text-lg">${currentUser.name}</p>
@@ -1322,36 +1316,22 @@
             const t = document.getElementById('tokenInput').value.toUpperCase();
             if(t !== db.examSettings.token) { alert('Token Ujian tidak valid!'); return; }
 
-            // Ambil Mapel yang dipilih dari dropdown
             const selectMapel = document.getElementById('siswa_pilih_mapel');
-            if (selectMapel) {
-                currentStudentSubjectId = selectMapel.value;
-            }
+            if (selectMapel) { currentStudentSubjectId = selectMapel.value; }
 
-            if (!currentStudentSubjectId) {
-                alert('Silakan pilih mata pelajaran ujian terlebih dahulu!');
-                return;
-            }
+            if (!currentStudentSubjectId) { alert('Silakan pilih mata pelajaran ujian terlebih dahulu!'); return; }
 
             examQuestions = db.questions.filter(q => q.subjectId === currentStudentSubjectId);
             if(examQuestions.length === 0) { alert('Belum ada soal tersedia untuk mata pelajaran ini.'); return; }
             
             const subject = db.subjects.find(s => s.id === currentStudentSubjectId);
 
-            // Randomize Urutan Soal (Berdasarkan Pengaturan Guru)
-            if (subject && subject.randomizeQuestions) {
-                examQuestions.sort(() => Math.random() - 0.5); 
-            }
+            if (subject && subject.randomizeQuestions) { examQuestions.sort(() => Math.random() - 0.5); }
 
-            // Membangun opsi tampilan soal (Untuk Randomisasi Opsi A,B,C,D)
             examQuestions = examQuestions.map(q => {
                 let mappedQ = {...q};
                 mappedQ.displayOptions = mappedQ.options.map((opt, i) => ({text: opt, originalIndex: i}));
-                
-                // Randomize Urutan Jawaban (Berdasarkan Pengaturan Guru)
-                if (subject && subject.randomizeOptions) {
-                    mappedQ.displayOptions.sort(() => Math.random() - 0.5);
-                }
+                if (subject && subject.randomizeOptions) { mappedQ.displayOptions.sort(() => Math.random() - 0.5); }
                 return mappedQ;
             });
             
@@ -1361,10 +1341,10 @@
                 res = { studentId: currentUser.id, subjectId: currentStudentSubjectId, score: 0, status: 'ongoing', answers: {}, doubtful: {}, endTime: endTime };
                 db.examResults.push(res);
             }
-            saveDB();
+            saveDB('examResults');
             currentAnswers = res.answers || {}; currentDoubtful = res.doubtful || {};
             currentQIndex = 0; cheatWarnings = 0;
-            isFinishingExam = false; // Reset flag saat mulai ujian
+            isFinishingExam = false; 
 
             const elem = document.documentElement;
             if (elem.requestFullscreen) {
@@ -1379,36 +1359,31 @@
             const display = document.getElementById('examTimer');
             
             examTimerInterval = setInterval(() => {
-                // Polling LocalStorage: Cek real-time apakah proktor menghentikan ujian
-                const latestDbStr = localStorage.getItem(DB_KEY);
-                if (latestDbStr) {
-                    const latestDb = JSON.parse(latestDbStr);
-                    // Kondisi 1: Proktor menghentikan semua ujian
-                    if(!latestDb.examSettings.isRunning) {
-                        clearInterval(examTimerInterval);
-                        alert("INFORMASI:\nProktor telah menghentikan ujian. Anda akan diarahkan ke layar utama.");
-                        forceLogoutSiswaLocal();
-                        return;
+                // Firebase Real-time Check
+                if(!db.examSettings.isRunning) {
+                    clearInterval(examTimerInterval);
+                    alert("INFORMASI:\nProktor telah menghentikan ujian. Anda akan diarahkan ke layar utama.");
+                    forceLogoutSiswaLocal();
+                    return;
+                }
+                
+                const myRes = db.examResults.find(r => r.studentId === currentUser.id && r.subjectId === currentStudentSubjectId);
+                if(myRes && myRes.status !== 'ongoing') {
+                    clearInterval(examTimerInterval);
+                    if(myRes.status === 'cheated') {
+                        alert("UJIAN DIBATALKAN!\n\nProktor mendiskualifikasi Anda karena indikasi pelanggaran/kecurangan.");
+                    } else {
+                        alert("SESI BERAKHIR\n\nWaktu atau sesi ujian Anda telah diakhiri secara manual oleh Proktor.");
                     }
-                    // Kondisi 2: Proktor menghentikan siswa ini secara spesifik (via Selesai Paksa / Diskualifikasi)
-                    const myRes = latestDb.examResults.find(r => r.studentId === currentUser.id && r.subjectId === currentStudentSubjectId);
-                    if(myRes && myRes.status !== 'ongoing') {
-                        clearInterval(examTimerInterval);
-                        if(myRes.status === 'cheated') {
-                            alert("UJIAN DIBATALKAN!\n\nProktor mendiskualifikasi Anda karena indikasi pelanggaran/kecurangan.");
-                        } else {
-                            alert("SESI BERAKHIR\n\nWaktu atau sesi ujian Anda telah diakhiri secara manual oleh Proktor.");
-                        }
-                        forceLogoutSiswaLocal();
-                        return;
-                    }
+                    forceLogoutSiswaLocal();
+                    return;
                 }
 
                 let rem = endTime - Date.now();
                 if(rem <= 0) {
                     clearInterval(examTimerInterval); display.innerText = "00:00:00";
                     alert("WAKTU HABIS! Ujian akan ditutup otomatis dan hasil langsung disimpan.");
-                    finishExam(false, true); // True = from timeout
+                    finishExam(false, true);
                 } else {
                     let h = Math.floor(rem / 3600000), m = Math.floor((rem % 3600000) / 60000), s = Math.floor((rem % 60000) / 1000);
                     display.innerText = String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
@@ -1417,8 +1392,6 @@
         }
 
         function forceLogoutSiswaLocal() {
-            // Reload DB terbaru tanpa overwrite data proktor
-            initDB(); 
             isFinishingExam = true;
             removeAntiCheat();
             if (document.fullscreenElement) document.exitFullscreen().catch(()=>{});
@@ -1445,7 +1418,6 @@
 
             const selectedAns = currentAnswers[q.id];
             
-            // Merender opsi jawaban menggunakan properti displayOptions (yang mungkin sudah diacak sesuai setting guru)
             document.getElementById('qOptions').innerHTML = q.displayOptions.map((optObj, idx) => `
                 <label class="flex items-start sm:items-center p-3 sm:p-4 border rounded cursor-pointer transition ${selectedAns === optObj.originalIndex ? 'bg-blue-50 border-blue-500 ring-2 ring-blue-500 shadow-sm' : 'hover:bg-gray-50 border-gray-300'}">
                     <input type="radio" name="answer" value="${optObj.originalIndex}" class="hidden" ${selectedAns === optObj.originalIndex ? 'checked' : ''} onchange="selectAnswer(${optObj.originalIndex})">
@@ -1488,7 +1460,7 @@
 
         function syncDB() {
             let res = db.examResults.find(r => r.studentId === currentUser.id && r.subjectId === currentStudentSubjectId);
-            if(res) { res.answers = currentAnswers; res.doubtful = currentDoubtful; saveDB(); }
+            if(res) { res.answers = currentAnswers; res.doubtful = currentDoubtful; saveDB('examResults'); }
         }
 
         function navigateQ(dir) { if (dir === 1 && currentQIndex === examQuestions.length - 1) return; currentQIndex += dir; renderQuestion(); renderGrid(); }
@@ -1499,17 +1471,9 @@
             let answered = Object.keys(currentAnswers).length;
             let raguCount = Object.values(currentDoubtful).filter(Boolean).length;
             
-            // Validasi: Cegah klik selesai jika belum dijawab semua atau masih ada yang ragu
-            if (answered < examQuestions.length) {
-                alert(`TIDAK DAPAT MENYELESAIKAN UJIAN!\n\nAnda baru menjawab ${answered} dari ${examQuestions.length} soal.\nHarap jawab semua soal yang tersedia terlebih dahulu.`);
-                return;
-            }
-            if (raguCount > 0) {
-                alert(`TIDAK DAPAT MENYELESAIKAN UJIAN!\n\nSistem mendeteksi ada ${raguCount} soal yang masih ditandai "Ragu-ragu".\nSilakan periksa kembali dan hilangkan tanda Ragu-ragu jika Anda sudah yakin.`);
-                return;
-            }
+            if (answered < examQuestions.length) { alert(`TIDAK DAPAT MENYELESAIKAN UJIAN!\n\nAnda baru menjawab ${answered} dari ${examQuestions.length} soal.\nHarap jawab semua soal yang tersedia terlebih dahulu.`); return; }
+            if (raguCount > 0) { alert(`TIDAK DAPAT MENYELESAIKAN UJIAN!\n\nSistem mendeteksi ada ${raguCount} soal yang masih ditandai "Ragu-ragu".\nSilakan periksa kembali dan hilangkan tanda Ragu-ragu jika Anda sudah yakin.`); return; }
 
-            // Modal Konfirmasi (Manual DOM inject untuk single-file)
             const overlay = document.createElement('div');
             overlay.className = "fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50";
             overlay.innerHTML = `
@@ -1542,21 +1506,21 @@
         const preventDefaultAction = (e) => e.preventDefault();
         
         function handleFullscreenChange() { 
-            if (isFinishingExam) return; // Abaikan jika sedang proses logout/selesai
+            if (isFinishingExam) return; 
             if (!document.fullscreenElement) triggerCheat('Keluar dari mode layar penuh (Full Screen)'); 
         }
         
         function handleVisibilityChange() { 
-            if (isFinishingExam) return; // Abaikan jika sedang proses logout/selesai
+            if (isFinishingExam) return; 
             if (document.hidden) triggerCheat('Berpindah tab atau menutup layar Ujian'); 
         }
 
         function triggerCheat(reason) {
             if (isFinishingExam) return;
-            if (document.getElementById('cheatWarningModal')) return; // Cegah modal tumpuk
+            if (document.getElementById('cheatWarningModal')) return; 
 
             cheatWarnings++;
-            const maxWarnings = 2; // Batas peringatan sebelum diskualifikasi
+            const maxWarnings = 2; 
 
             if (cheatWarnings > maxWarnings) {
                 alert(`PELANGGARAN FATAL!\n\nSistem mendeteksi aktivitas mencurigakan berulang kali: ${reason}.\nSesuai aturan, ujian Anda dihentikan paksa.`);
@@ -1588,7 +1552,6 @@
             const modal = document.getElementById('cheatWarningModal');
             if (modal) modal.remove();
             
-            // Paksa masuk fullscreen lagi setelah menutup peringatan
             const elem = document.documentElement;
             if (!document.fullscreenElement && elem.requestFullscreen) {
                 elem.requestFullscreen().catch(()=>{});
@@ -1596,7 +1559,7 @@
         }
 
         function finishExam(isCheat = false, isTimeout = false) {
-            isFinishingExam = true; // Tandai sedang menyelesaikan agar anticheat tidak menyala
+            isFinishingExam = true; 
             removeAntiCheat(); 
             clearInterval(examTimerInterval);
             
@@ -1604,7 +1567,6 @@
                 document.exitFullscreen().catch(()=>{});
             }
 
-            // Calculate Score based on Points
             let earned = 0, maxP = 0;
             examQuestions.forEach(q => {
                 let p = q.points || 10; maxP += p;
@@ -1618,33 +1580,23 @@
                 res.status = isCheat ? 'cheated' : 'finished';
                 res.answers = currentAnswers; res.doubtful = currentDoubtful;
             }
-            saveDB();
+            saveDB('examResults');
 
-            currentStudentSubjectId = null; // Reset agar siswa bisa kembali ke layar pilih mapel jika ada mapel lain
+            currentStudentSubjectId = null; 
 
-            // Restore UI Layout
             document.querySelector('nav').classList.remove('hidden');
             document.getElementById('mainApp').classList.replace('p-2', 'p-4');
             document.getElementById('mainApp').classList.replace('h-screen', 'md:p-8');
             routeUser();
         }
-
-        /* ==================== INITIALIZATION ==================== */
-        initDB();
-
     </script>
     
     <!-- FIREBASE INITIALIZATION -->
     <script type="module">
-      // Import the functions you need from the SDKs you need
       import { initializeApp } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-app.js";
       import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-analytics.js";
-      import { getFirestore } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-firestore.js";
-      // TODO: Add SDKs for Firebase products that you want to use
-      // https://firebase.google.com/docs/web/setup#available-libraries
+      import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-firestore.js";
 
-      // Your web app's Firebase configuration
-      // For Firebase JS SDK v7.20.0 and later, measurementId is optional
       const firebaseConfig = {
         apiKey: "AIzaSyDT0X4RUqaR7VJN4VHDIW87nvRdWUD2o18",
         authDomain: "cbtabt.firebaseapp.com",
@@ -1655,14 +1607,18 @@
         measurementId: "G-SBW0VVTWXN"
       };
 
-      // Initialize Firebase
       const app = initializeApp(firebaseConfig);
       const analytics = getAnalytics(app);
       
-      // Initialize Cloud Firestore and get a reference to the service
+      // Mengekspos fungsi Firebase ke window agar dapat diakses oleh script utama
       window.dbFirestore = getFirestore(app); 
-      // Note: dbFirestore is attached to window so it can be accessed 
-      // by the non-module script above when you are ready to migrate.
+      window.fsDoc = doc;
+      window.fsSetDoc = setDoc;
+      window.fsGetDoc = getDoc;
+      window.fsOnSnapshot = onSnapshot;
+
+      // Memberi sinyal ke script utama bahwa Firebase siap
+      window.dispatchEvent(new Event('firebaseReady'));
     </script>
 </body>
 </html>
