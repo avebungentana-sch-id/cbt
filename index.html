@@ -1633,5 +1633,36 @@
         initDB();
 
     </script>
+    
+    <!-- FIREBASE INITIALIZATION -->
+    <script type="module">
+      // Import the functions you need from the SDKs you need
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-app.js";
+      import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-analytics.js";
+      import { getFirestore } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-firestore.js";
+      // TODO: Add SDKs for Firebase products that you want to use
+      // https://firebase.google.com/docs/web/setup#available-libraries
+
+      // Your web app's Firebase configuration
+      // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+      const firebaseConfig = {
+        apiKey: "AIzaSyDT0X4RUqaR7VJN4VHDIW87nvRdWUD2o18",
+        authDomain: "cbtabt.firebaseapp.com",
+        projectId: "cbtabt",
+        storageBucket: "cbtabt.firebasestorage.app",
+        messagingSenderId: "74336714676",
+        appId: "1:74336714676:web:b8dee5a9175d05cb587ce1",
+        measurementId: "G-SBW0VVTWXN"
+      };
+
+      // Initialize Firebase
+      const app = initializeApp(firebaseConfig);
+      const analytics = getAnalytics(app);
+      
+      // Initialize Cloud Firestore and get a reference to the service
+      window.dbFirestore = getFirestore(app); 
+      // Note: dbFirestore is attached to window so it can be accessed 
+      // by the non-module script above when you are ready to migrate.
+    </script>
 </body>
 </html>
